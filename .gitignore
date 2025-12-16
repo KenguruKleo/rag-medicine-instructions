@@ -127,3 +127,4 @@ cython_debug/
 
 # Project data and storage artifacts
 /storage/
+/data/
