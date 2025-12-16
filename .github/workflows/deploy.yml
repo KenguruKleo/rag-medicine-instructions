@@ -1,0 +1,97 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types: [closed]
+
+jobs:
+  deploy:
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Stop service
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "sudo systemctl stop rag-medicine-instructions || true"
+
+      - name: Deploy code
+        run: |
+          # Sync code to server (excluding .git, .venv, data, storage, etc.)
+          rsync -avz --delete \
+            --exclude '.git' \
+            --exclude '.venv' \
+            --exclude '__pycache__' \
+            --exclude '*.pyc' \
+            --exclude '.env' \
+            --exclude 'storage' \
+            --exclude 'data' \
+            --exclude '.DS_Store' \
+            --exclude '*.ipynb_checkpoints' \
+            ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/rag-medicine-instructions/
+
+      - name: Install/update dependencies
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "cd /opt/rag-medicine-instructions && \
+             sudo -u rag-app .venv/bin/pip install --upgrade pip && \
+             sudo -u rag-app .venv/bin/pip install -r requirements.txt"
+
+      - name: Set permissions
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "sudo chown -R rag-app:rag-app /opt/rag-medicine-instructions"
+
+      - name: Start service
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "sudo systemctl start rag-medicine-instructions"
+
+      - name: Wait for service to start
+        run: |
+          sleep 5
+
+      - name: Check service status
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "sudo systemctl status rag-medicine-instructions --no-pager -l || true"
+
+      - name: Health check
+        run: |
+          # Wait a bit more for Streamlit to fully start
+          sleep 3
+          # Check if service is running
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "systemctl is-active --quiet rag-medicine-instructions && echo 'Service is running' || (echo 'Service failed to start' && exit 1)"
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Server**: ${{ secrets.SSH_HOST }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View logs on server:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "sudo journalctl -u rag-medicine-instructions -f" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
