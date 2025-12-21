@@ -397,28 +397,64 @@ The application can be deployed to a production server with automated deployment
    pip install -r requirements.txt
    ```
 
-7. **Install systemd service:**
+7. **Create Streamlit configuration directory:**
+   ```bash
+   # On server - Streamlit needs a config directory to avoid permission issues
+   sudo -u rag-app mkdir -p /opt/rag-medicine-instructions/.streamlit
+   sudo -u rag-app touch /opt/rag-medicine-instructions/.streamlit/secrets.toml
+   sudo -u rag-app touch /opt/rag-medicine-instructions/.streamlit/config.toml
+   sudo chown -R rag-app:rag-app /opt/rag-medicine-instructions/.streamlit
+   ```
+
+8. **Install systemd service:**
    ```bash
    # On server
    sudo cp systemd/rag-medicine-instructions.service /etc/systemd/system/
    sudo systemctl daemon-reload
    sudo systemctl enable rag-medicine-instructions
    sudo systemctl start rag-medicine-instructions
+   
+   # Check service status
+   sudo systemctl status rag-medicine-instructions
    ```
 
-8. **Configure Nginx:**
+9. **Configure Nginx (HTTP first, then SSL):**
    ```bash
-   # On server
+   # On server - Start with HTTP-only config
+   # The nginx/rag-medicine-instructions.conf includes SSL, but certbot will update it
    sudo cp nginx/rag-medicine-instructions.conf /etc/nginx/sites-available/
-   sudo ln -s /etc/nginx/sites-available/rag-medicine-instructions.conf /etc/nginx/sites-enabled/
+   sudo ln -sf /etc/nginx/sites-available/rag-medicine-instructions.conf /etc/nginx/sites-enabled/
+   
+   # If SSL certificates don't exist yet, use HTTP-only config temporarily
+   # Or let certbot handle it in the next step
    sudo nginx -t
    sudo systemctl reload nginx
    ```
 
-9. **Set up SSL certificate:**
+10. **Set up SSL certificate:**
    ```bash
    # On server
-   sudo certbot --nginx -d rag-medicine-instructions.medkit.space
+   # Certbot will automatically configure Nginx with SSL
+   sudo certbot --nginx -d rag-medicine-instructions.medkit.space --non-interactive --agree-tos --email YOUR_EMAIL@example.com --redirect
+   
+   # Verify SSL configuration
+   sudo nginx -t
+   sudo systemctl reload nginx
+   ```
+
+11. **Verify everything is working:**
+   ```bash
+   # Check Streamlit service
+   sudo systemctl is-active rag-medicine-instructions
+   
+   # Check Nginx
+   sudo systemctl is-active nginx
+   
+   # Test Streamlit health endpoint
+   curl http://127.0.0.1:8501/_stcore/health
+   
+   # Test HTTPS (from server or locally)
+   curl -k https://rag-medicine-instructions.medkit.space/
    ```
 
 ### GitHub Actions Deployment

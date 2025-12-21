@@ -31,8 +31,8 @@ SyslogIdentifier=rag-medicine-instructions
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/rag-medicine-instructions/storage /opt/rag-medicine-instructions/data /var/log/rag-medicine-instructions
+ProtectHome=read-only
+ReadWritePaths=/opt/rag-medicine-instructions/storage /opt/rag-medicine-instructions/data /var/log/rag-medicine-instructions /home/rag-app/.streamlit
 
 # Resource limits
 LimitNOFILE=65536
