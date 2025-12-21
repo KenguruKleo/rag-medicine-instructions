@@ -36,9 +36,13 @@ jobs:
       - name: Stop service
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "sudo systemctl stop rag-medicine-instructions || true; \
-             sleep 3; \
-             sudo pkill -f 'streamlit.*8501' || true; \
+            "sudo systemctl stop rag-medicine-instructions || true"
+          
+      - name: Kill processes on port 8501
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "sleep 3; \
+             sudo fuser -k 8501/tcp || true; \
              sleep 2"
 
       - name: Deploy code
