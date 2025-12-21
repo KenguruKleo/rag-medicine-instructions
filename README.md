@@ -87,6 +87,16 @@ This will:
 
 **Note:** Ingestion can take a long time (hours) for all 16,767 items. Use `INGESTION_LIMIT` in `.env` to limit processing for testing.
 
+**Resuming after interruption:**
+- The script automatically skips medicines that have already been successfully downloaded (checks ChromaDB and file existence).
+- Simply run the script again to continue from where it left off.
+
+**Reset ingestion progress:**
+```bash
+python -m app.ingestion --reset
+```
+This will delete all entries from ChromaDB medicines collection and remove all HTML/MHT files. Use with caution!
+
 #### Configuration Options
 
 You can configure the ingestion process via environment variables (set in `.env` file or export before running):
@@ -128,6 +138,23 @@ The notebook includes:
 - Sample document inspection
 - DataFrame creation for easy analysis
 - Search and filter examples
+
+### Progress Tracking and Resuming
+
+Both ingestion and indexing scripts track progress and automatically skip already processed items:
+
+- **Ingestion**: Checks ChromaDB to see which medicines have already been downloaded. Skips medicines with `status="success"` and existing HTML/MHT files.
+- **Indexing**: Checks RAG collection to see which files have already been indexed. Skips files that already have chunks in the database.
+
+**To continue processing after interruption:**
+- Simply run the scripts again - they will automatically resume from where they left off.
+- No need to manually track progress or delete partial data.
+
+**To reset progress and start from scratch:**
+- **Reset ingestion**: `python -m app.ingestion --reset` (deletes all ChromaDB medicines entries and HTML/MHT files)
+- **Reset indexing**: `python -m app.indexing --reset` (deletes all chunks from RAG collection)
+
+**Warning:** Reset operations are destructive and cannot be undone. Use with caution!
 
 ### Indexing (Phase 2)
 
@@ -187,6 +214,16 @@ python -m app.indexing
 - Use `INDEXING_LIMIT` in `.env` to limit processing for testing
 - The script shows progress, token usage, and estimated costs
 
+**Resuming after interruption:**
+- The script automatically skips files that have already been indexed (checks RAG collection).
+- Simply run the script again to continue from where it left off.
+
+**Reset indexing progress:**
+```bash
+python -m app.indexing --reset
+```
+This will delete all chunks from the RAG collection. Use with caution!
+
 #### Indexing Configuration
 
 - `CHUNK_SIZE` - Size of text chunks (default: `1000` characters)
@@ -212,7 +249,7 @@ The notebook includes:
 
 ### Multilingual Capabilities
 
-GPT-4o-mini is multilingual and can:
+GPT-5-nano is multilingual and can:
 - ✅ Understand Ukrainian medical instructions
 - ✅ Answer questions in English (or any language you specify)
 - ✅ Translate and explain medical information across languages
@@ -240,7 +277,12 @@ The web interface provides:
 - Semantic search across all indexed instructions
 - Multilingual support (ask in Ukrainian, get answer in English/Ukrainian)
 - Source citations with medicine information
-- Response language selection (English, Ukrainian, Russian)
+- Response language selection (English, Ukrainian)
+- **File viewer page**: Click on any source file name to view the full medical instruction in a separate page
+
+**Pages:**
+- **Main page** (`/`): Chat interface for querying medical instructions
+- **View File page** (`/view_file`): Displays full content of HTML/MHT medical instruction files
 
 Access the application at `http://localhost:8501` (or configured port).
 
@@ -318,6 +360,7 @@ The application can be deployed to a production server with automated deployment
    **Option C: Manual file copy (for small changes):**
    ```bash
    # Copy specific files/directories using gcloud compute scp
+   # Note: app/ includes app/pages/ for multi-page Streamlit app
    gcloud compute scp --recurse app/ rag-medicine-instructions-01:/opt/rag-medicine-instructions/ --zone us-east1-c
    gcloud compute scp --recurse scripts/ rag-medicine-instructions-01:/opt/rag-medicine-instructions/ --zone us-east1-c
    gcloud compute scp --recurse systemd/ rag-medicine-instructions-01:/opt/rag-medicine-instructions/ --zone us-east1-c
@@ -389,12 +432,157 @@ The project includes automated deployment via GitHub Actions. When code is pushe
 
 **Required GitHub Secrets:**
 - `SSH_PRIVATE_KEY` - Private SSH key for server access
-- `SSH_HOST` - Server IP address (e.g., `34.73.183.90`)
-- `SSH_USER` - SSH username for server
+- `SSH_HOST` - Server hostname or IP address (e.g., `rag-medicine-instructions.medkit.space` or `34.73.183.90`)
+- `SSH_USER` - SSH username for server (e.g., `kostiantyn.yemelianov`)
 
-**To set up GitHub Secrets:**
-1. Go to repository Settings → Secrets and variables → Actions
-2. Add the three secrets listed above
+**How to get SSH_PRIVATE_KEY:**
+
+1. **Generate a new SSH key pair** (if you don't have one for this server):
+   ```bash
+   ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/github_actions_deploy
+   ```
+   Or if ed25519 is not supported:
+   ```bash
+   ssh-keygen -t rsa -b 4096 -C "github-actions-deploy" -f ~/.ssh/github_actions_deploy
+   ```
+   This creates two files:
+   - `~/.ssh/github_actions_deploy` (private key - **this is SSH_PRIVATE_KEY**)
+   - `~/.ssh/github_actions_deploy.pub` (public key)
+
+2. **Copy the public key to the server** (only if you created a NEW key in step 1):
+   ```bash
+   # Copy public key to server
+   gcloud compute scp ~/.ssh/github_actions_deploy.pub rag-medicine-instructions-01:/tmp/ --zone us-east1-c
+   
+   # SSH to server and add to authorized_keys
+   gcloud compute ssh rag-medicine-instructions-01 --zone us-east1-c
+   # On server:
+   mkdir -p ~/.ssh
+   cat /tmp/github_actions_deploy.pub >> ~/.ssh/authorized_keys
+   chmod 600 ~/.ssh/authorized_keys
+   chmod 700 ~/.ssh
+   rm /tmp/github_actions_deploy.pub
+   exit
+   ```
+   
+   **Note:** If you're using an EXISTING SSH key that already works with the server, skip this step - the public key is already on the server.
+
+3. **Get the private key content:**
+   ```bash
+   # On your local machine, display the private key
+   cat ~/.ssh/github_actions_deploy
+   ```
+   Copy the entire output (including `-----BEGIN` and `-----END` lines).
+
+4. **Add to GitHub Secrets:**
+   - Go to your GitHub repository
+   - Navigate to: **Settings** → **Secrets and variables** → **Actions**
+   - Click **New repository secret**
+   - Name: `SSH_PRIVATE_KEY`
+   - Value: Paste the entire private key content (from step 3)
+   - Click **Add secret**
+
+5. **Add other secrets:**
+   - `SSH_HOST`: Your server hostname or IP (e.g., `rag-medicine-instructions.medkit.space` or `34.73.183.90`)
+   - `SSH_USER`: Your SSH username
+
+**How to find SSH_USER:**
+
+**Quick method - run this command:**
+```bash
+gcloud compute ssh rag-medicine-instructions-01 --zone us-east1-c --command="whoami"
+```
+
+This will output your SSH username. Copy that value and use it as `SSH_USER` in GitHub Secrets.
+
+**Alternative methods:**
+
+1. **Connect and check:**
+   ```bash
+   gcloud compute ssh rag-medicine-instructions-01 --zone us-east1-c
+   whoami
+   exit
+   ```
+
+2. **If you're using an existing SSH key:**
+   - The username is the same as the user whose `~/.ssh/authorized_keys` contains your public key
+   - If you added the key to your own user: use the result from `whoami` command above
+   - If you added the key to `rag-app` user: use `rag-app`
+
+3. **Verify which user your SSH key works with:**
+   ```bash
+   # Test with your private key
+   ssh -i ~/.ssh/github_actions_deploy -o StrictHostKeyChecking=no YOUR_SERVER_IP "whoami"
+   # Replace YOUR_SERVER_IP with your server hostname or IP (e.g., rag-medicine-instructions.medkit.space or 34.73.183.90)
+   # This will show which username the key authenticates as
+   ```
+
+**Common values:**
+- Google Cloud default username: Usually your Google account username (e.g., `kostiantyn.yemelianov`)
+- Custom user: `rag-app` (if you set up deployment with this user)
+
+**Alternative: Use existing SSH key**
+
+If you already have an SSH key that works with the server (you can connect via `ssh USER@SERVER`), you can use it directly:
+
+1. **Get your existing private key:**
+   ```bash
+   # Display your existing private key
+   cat ~/.ssh/id_rsa  # or ~/.ssh/id_ed25519, depending on your key type
+   ```
+   Copy the entire output (including `-----BEGIN` and `-----END` lines).
+
+2. **Add to GitHub Secrets:**
+   - Go to your GitHub repository: **Settings** → **Secrets and variables** → **Actions**
+   - Create secret: `SSH_PRIVATE_KEY` with the private key content
+
+3. **No need to add public key to server** - it's already there if your key works!
+
+**Important:** Make sure the SSH key you use has access to the user specified in `SSH_USER` secret.
+
+**Troubleshooting SSH Connection Issues:**
+
+If you get "Permission denied (publickey)" error in GitHub Actions:
+
+1. **Verify your SSH key works locally:**
+   ```bash
+   # Test SSH connection with your private key
+   ssh -i ~/.ssh/github_actions_deploy -o StrictHostKeyChecking=no YOUR_USERNAME@YOUR_SERVER_IP "whoami"
+   # Replace YOUR_USERNAME and YOUR_SERVER_IP with actual values
+   ```
+   If this fails, the public key is not on the server.
+
+2. **Add public key to server:**
+   ```bash
+   # Copy public key to server
+   gcloud compute scp ~/.ssh/github_actions_deploy.pub rag-medicine-instructions-01:/tmp/ --zone us-east1-c
+   
+   # SSH to server
+   gcloud compute ssh rag-medicine-instructions-01 --zone us-east1-c
+   
+   # On server, add to authorized_keys
+   mkdir -p ~/.ssh
+   chmod 700 ~/.ssh
+   cat /tmp/github_actions_deploy.pub >> ~/.ssh/authorized_keys
+   chmod 600 ~/.ssh/authorized_keys
+   rm /tmp/github_actions_deploy.pub
+   exit
+   ```
+
+3. **Verify the key is added correctly:**
+   ```bash
+   # Test again
+   ssh -i ~/.ssh/github_actions_deploy -o StrictHostKeyChecking=no YOUR_USERNAME@YOUR_SERVER_IP "whoami"
+   ```
+
+4. **Check GitHub Secrets:**
+   - Make sure `SSH_PRIVATE_KEY` contains the ENTIRE private key (including `-----BEGIN` and `-----END` lines)
+   - Make sure `SSH_USER` matches the username you tested with
+   - Make sure `SSH_HOST` is the correct server hostname or IP
+
+5. **If using existing key:**
+   - Make sure the public key is in `~/.ssh/authorized_keys` of the user specified in `SSH_USER`
+   - Verify with: `ssh -i ~/.ssh/id_rsa YOUR_USERNAME@YOUR_SERVER_IP "whoami"`
 
 **Manual Deployment:**
 

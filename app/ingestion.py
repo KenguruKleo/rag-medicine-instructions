@@ -6,9 +6,11 @@ and stores them locally with metadata.
 
 from __future__ import annotations
 
+import argparse
 import csv
 import logging
 import os
+import shutil
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -67,32 +69,75 @@ class MedicineMetadata:
 
 def detect_encoding(file_path: Path) -> str:
     """Detect file encoding using chardet"""
+    logger.info(f"Starting encoding detection for {file_path.name}...")
+    start_time = time.time()
+    
+    # Read file for encoding detection (limit to first 1MB for speed)
     with open(file_path, "rb") as f:
-        raw_data = f.read()
-        result = chardet.detect(raw_data)
-        encoding = result["encoding"]
-        confidence = result["confidence"]
-        logger.info(f"Detected encoding: {encoding} (confidence: {confidence:.2f})")
-        return encoding or "windows-1251"
+        # Read first 1MB for faster detection
+        raw_data = f.read(1024 * 1024)
+        logger.info(f"  Read {len(raw_data):,} bytes for encoding detection")
+    
+    detection_start = time.time()
+    result = chardet.detect(raw_data)
+    detection_time = time.time() - detection_start
+    
+    encoding = result["encoding"]
+    confidence = result["confidence"]
+    total_time = time.time() - start_time
+    
+    logger.info(f"Encoding detection complete in {total_time:.2f}s (detection: {detection_time:.2f}s)")
+    logger.info(f"  Detected encoding: {encoding} (confidence: {confidence:.2f})")
+    return encoding or "windows-1251"
 
 
 def read_csv_with_encoding(file_path: Path) -> list[dict]:
     """Read CSV file, handling Windows-1251 encoding"""
+    logger.info(f"Starting CSV file reading...")
+    start_time = time.time()
+    
     encoding = detect_encoding(file_path)
-
+    encoding_time = time.time() - start_time
+    
     # Try to read with detected encoding, fallback to windows-1251
+    logger.info(f"Attempting to read CSV with encoding: {encoding}")
     for enc in [encoding, "windows-1251", "utf-8"]:
         try:
+            logger.info(f"  Trying encoding: {enc}...")
+            read_start = time.time()
+            
             with open(file_path, "r", encoding=enc) as f:
                 reader = csv.DictReader(f, delimiter=";")
-                rows = list(reader)
-                logger.info(f"Successfully read {len(rows)} rows with encoding: {enc}")
+                
+                # Read rows with progress indication
+                rows = []
+                row_count = 0
+                last_log_time = time.time()
+                
+                for row in reader:
+                    rows.append(row)
+                    row_count += 1
+                    
+                    # Log progress every 5000 rows or every 10 seconds
+                    current_time = time.time()
+                    if row_count % 5000 == 0 or (current_time - last_log_time) >= 10:
+                        elapsed = current_time - read_start
+                        rate = row_count / elapsed if elapsed > 0 else 0
+                        logger.info(f"    Read {row_count:,} rows (rate: {rate:.0f} rows/sec, elapsed: {elapsed:.1f}s)")
+                        last_log_time = current_time
+                
+                read_time = time.time() - read_start
+                total_time = time.time() - start_time
+                
+                logger.info(f"Successfully read {len(rows):,} rows with encoding: {enc}")
+                logger.info(f"  Reading took {read_time:.2f}s (total: {total_time:.2f}s)")
                 return rows
+                
         except (UnicodeDecodeError, UnicodeError) as e:
-            logger.warning(f"Failed to read with encoding {enc}: {e}")
+            logger.warning(f"  Failed to read with encoding {enc}: {e}")
             continue
         except Exception as e:
-            logger.error(f"Error reading CSV with encoding {enc}: {e}")
+            logger.error(f"  Error reading CSV with encoding {enc}: {e}")
             raise
 
     raise ValueError(f"Could not read CSV file {file_path} with any encoding")
@@ -286,42 +331,155 @@ def init_chroma_client(chroma_dir: Path, collection_name: str) -> tuple[chromadb
 def save_medicine_to_chroma(
     collection: chromadb.Collection,
     medicine_data: dict,
+    verbose: bool = False,
 ) -> None:
     """Save or update medicine data in ChromaDB (from CSV extraction)"""
     medicine_id = medicine_data["id"]
     timestamp = datetime.now().isoformat()
     instruction_url = medicine_data.get("instruction_url", "")
 
-    # Check if document exists
-    existing = collection.get(ids=[medicine_id])
+    try:
+        # Check if document exists
+        existing = collection.get(ids=[medicine_id])
 
-    if existing["ids"]:
-        # Update existing document
-        collection.update(
-            ids=[medicine_id],
-            metadatas=[{
-                "ukrainian_name": medicine_data["ukrainian_name"],
-                "international_name": medicine_data["international_name"],
-                "medicinal_product_name": medicine_data["medicinal_product_name"],
-                "instruction_url": instruction_url,
-                "updated_at": timestamp,
-            }],
-        )
-    else:
-        # Create new document with empty document text (will be filled with embeddings later)
-        collection.add(
-            ids=[medicine_id],
-            documents=[medicine_data.get("ukrainian_name", "") or ""],  # Use name as document text for now
-            metadatas=[{
-                "ukrainian_name": medicine_data["ukrainian_name"],
-                "international_name": medicine_data["international_name"],
-                "medicinal_product_name": medicine_data["medicinal_product_name"],
-                "instruction_url": instruction_url,
-                "fetch_status": "pending",
-                "created_at": timestamp,
-                "updated_at": timestamp,
-            }],
-        )
+        if existing["ids"]:
+            # Update existing document
+            if verbose:
+                logger.debug(f"Updating existing medicine in ChromaDB: {medicine_id}")
+            collection.update(
+                ids=[medicine_id],
+                metadatas=[{
+                    "ukrainian_name": medicine_data["ukrainian_name"],
+                    "international_name": medicine_data["international_name"],
+                    "medicinal_product_name": medicine_data["medicinal_product_name"],
+                    "instruction_url": instruction_url,
+                    "updated_at": timestamp,
+                }],
+            )
+        else:
+            # Create new document with empty document text (will be filled with embeddings later)
+            if verbose:
+                logger.debug(f"Adding new medicine to ChromaDB: {medicine_id}")
+            collection.add(
+                ids=[medicine_id],
+                documents=[medicine_data.get("ukrainian_name", "") or ""],  # Use name as document text for now
+                metadatas=[{
+                    "ukrainian_name": medicine_data["ukrainian_name"],
+                    "international_name": medicine_data["international_name"],
+                    "medicinal_product_name": medicine_data["medicinal_product_name"],
+                    "instruction_url": instruction_url,
+                    "fetch_status": "pending",
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }],
+            )
+    except Exception as e:
+        logger.error(f"Error saving medicine {medicine_id} to ChromaDB: {e}")
+        raise
+
+
+def save_medicines_batch_to_chroma(
+    collection: chromadb.Collection,
+    medicines_data: list[dict],
+) -> None:
+    """Save or update multiple medicines in ChromaDB using batch operations"""
+    if not medicines_data:
+        return
+    
+    logger.info(f"Preparing batch save for {len(medicines_data)} medicines...")
+    start_time = time.time()
+    
+    # Get all IDs to check which ones already exist
+    all_ids = [m["id"] for m in medicines_data]
+    logger.info(f"  Checking existence of {len(all_ids)} medicines in ChromaDB...")
+    
+    check_start = time.time()
+    existing_results = collection.get(ids=all_ids)
+    check_time = time.time() - check_start
+    logger.info(f"  Existence check completed in {check_time:.2f}s")
+    
+    existing_ids = set(existing_results["ids"]) if existing_results["ids"] else set()
+    
+    # Separate into new and existing medicines
+    new_medicines = []
+    update_medicines = []
+    timestamp = datetime.now().isoformat()
+    
+    for medicine_data in medicines_data:
+        medicine_id = medicine_data["id"]
+        instruction_url = medicine_data.get("instruction_url", "")
+        
+        if medicine_id in existing_ids:
+            # Update existing
+            update_medicines.append({
+                "id": medicine_id,
+                "metadata": {
+                    "ukrainian_name": medicine_data["ukrainian_name"],
+                    "international_name": medicine_data["international_name"],
+                    "medicinal_product_name": medicine_data["medicinal_product_name"],
+                    "instruction_url": instruction_url,
+                    "updated_at": timestamp,
+                }
+            })
+        else:
+            # Add new
+            new_medicines.append({
+                "id": medicine_id,
+                "document": medicine_data.get("ukrainian_name", "") or "",
+                "metadata": {
+                    "ukrainian_name": medicine_data["ukrainian_name"],
+                    "international_name": medicine_data["international_name"],
+                    "medicinal_product_name": medicine_data["medicinal_product_name"],
+                    "instruction_url": instruction_url,
+                    "fetch_status": "pending",
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+            })
+    
+    logger.info(f"  Found {len(existing_ids)} existing, {len(new_medicines)} new medicines")
+    
+    # Batch add new medicines
+    if new_medicines:
+        add_start = time.time()
+        logger.info(f"  Batch adding {len(new_medicines)} new medicines...")
+        
+        # Process in chunks of 10
+        chunk_size = 10
+        for i in range(0, len(new_medicines), chunk_size):
+            chunk = new_medicines[i:i + chunk_size]
+            collection.add(
+                ids=[m["id"] for m in chunk],
+                documents=[m["document"] for m in chunk],
+                metadatas=[m["metadata"] for m in chunk],
+            )
+            if (i + chunk_size) % 50 == 0 or i + chunk_size >= len(new_medicines):
+                logger.info(f"    Added {min(i + chunk_size, len(new_medicines))}/{len(new_medicines)} new medicines")
+        
+        add_time = time.time() - add_start
+        logger.info(f"  Batch add completed in {add_time:.2f}s")
+    
+    # Batch update existing medicines
+    if update_medicines:
+        update_start = time.time()
+        logger.info(f"  Batch updating {len(update_medicines)} existing medicines...")
+        
+        # Process in chunks of 10
+        chunk_size = 10
+        for i in range(0, len(update_medicines), chunk_size):
+            chunk = update_medicines[i:i + chunk_size]
+            collection.update(
+                ids=[m["id"] for m in chunk],
+                metadatas=[m["metadata"] for m in chunk],
+            )
+            if (i + chunk_size) % 50 == 0 or i + chunk_size >= len(update_medicines):
+                logger.info(f"    Updated {min(i + chunk_size, len(update_medicines))}/{len(update_medicines)} existing medicines")
+        
+        update_time = time.time() - update_start
+        logger.info(f"  Batch update completed in {update_time:.2f}s")
+    
+    total_time = time.time() - start_time
+    logger.info(f"Batch save completed: {len(new_medicines)} added, {len(update_medicines)} updated in {total_time:.2f}s")
 
 
 def update_ingestion_status_chroma(
@@ -425,52 +583,170 @@ def process_medicine(
     return metadata
 
 
+def reset_ingestion_progress(
+    chroma_collection: chromadb.Collection,
+    html_dir: Path,
+    mht_dir: Path,
+) -> None:
+    """Reset ingestion progress: delete all data from ChromaDB and remove HTML/MHT files"""
+    logger.warning("=" * 60)
+    logger.warning("RESETTING INGESTION PROGRESS")
+    logger.warning("=" * 60)
+    
+    # Delete all entries from ChromaDB
+    try:
+        all_ids = chroma_collection.get()["ids"]
+        if all_ids:
+            logger.info(f"Deleting {len(all_ids)} entries from ChromaDB medicines collection...")
+            chroma_collection.delete(ids=all_ids)
+            logger.info("✅ ChromaDB medicines collection cleared")
+        else:
+            logger.info("ChromaDB medicines collection is already empty")
+    except Exception as e:
+        logger.error(f"Error clearing ChromaDB: {e}")
+    
+    # Remove HTML files
+    if html_dir.exists():
+        html_count = len(list(html_dir.glob("*.html")))
+        if html_count > 0:
+            logger.info(f"Removing {html_count} HTML files from {html_dir}...")
+            for html_file in html_dir.glob("*.html"):
+                html_file.unlink()
+            logger.info("✅ HTML files removed")
+        else:
+            logger.info("No HTML files to remove")
+    
+    # Remove MHT files
+    if mht_dir.exists():
+        mht_count = len(list(mht_dir.glob("*.mht")))
+        if mht_count > 0:
+            logger.info(f"Removing {mht_count} MHT files from {mht_dir}...")
+            for mht_file in mht_dir.glob("*.mht"):
+                mht_file.unlink()
+            logger.info("✅ MHT files removed")
+        else:
+            logger.info("No MHT files to remove")
+    
+    logger.info("=" * 60)
+    logger.info("Ingestion progress reset complete!")
+    logger.info("=" * 60)
+
+
 def main() -> None:
     """Main ingestion function"""
+    parser = argparse.ArgumentParser(description="Medical instructions ingestion script")
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Reset ingestion progress: delete all data from ChromaDB and remove HTML/MHT files",
+    )
+    args = parser.parse_args()
+    
     logger.info("Starting medical instructions ingestion")
+
+    # Initialize ChromaDB first (needed for reset)
+    logger.info(f"Initializing ChromaDB at {CHROMA_DIR}")
+    chroma_client, chroma_collection = init_chroma_client(CHROMA_DIR, CHROMA_MEDICINES_COLLECTION)
+    
+    # Handle reset
+    if args.reset:
+        reset_ingestion_progress(chroma_collection, HTML_DIR, MHT_DIR)
+        logger.info("Exiting after reset. Run without --reset to start ingestion.")
+        return
 
     # Validate CSV file exists
     if not CSV_PATH.exists():
         logger.error(f"CSV file not found: {CSV_PATH}")
         return
 
+    # Load existing metadata from ChromaDB FIRST (to know what's already processed)
+    metadata_dict = load_metadata_from_chroma(chroma_collection)
+    logger.info(f"Loaded {len(metadata_dict)} existing metadata entries from ChromaDB")
+    
+    # Create a set of already successfully processed medicine IDs for fast lookup
+    # Pre-check file existence once to avoid repeated file system calls
+    processed_ids: set[str] = set()
+    for medicine_id, metadata in metadata_dict.items():
+        if metadata.status == "success" and metadata.file_path:
+            html_path = Path(metadata.file_path)
+            if html_path.exists():
+                # Check MHT file if instruction_url exists (we'll check this per medicine later)
+                processed_ids.add(medicine_id)
+    
+    already_processed = len(processed_ids)
+    logger.info(f"Found {already_processed} medicines already successfully processed")
+
     # Read CSV
     csv_size = CSV_PATH.stat().st_size if CSV_PATH.exists() else 0
     csv_size_mb = csv_size / (1024 * 1024)
     logger.info(f"Reading CSV from {CSV_PATH}")
     logger.info(f"  File size: {csv_size_mb:.2f} MB ({csv_size:,} bytes)")
+    logger.info(f"  Starting CSV reading process...")
+    
     rows = read_csv_with_encoding(CSV_PATH)
+    
     logger.info(f"  Total rows read: {len(rows):,}")
     if LIMIT and LIMIT > 0:
-        logger.info(f"  Will process up to {LIMIT} medicines (limit enabled)")
+        logger.info(f"  Will process up to {LIMIT} NEW medicines (limit enabled, skipping already processed)")
     else:
-        logger.info(f"  Will process all medicines (no limit)")
+        logger.info(f"  Will process all medicines (no limit, skipping already processed)")
 
-    # Initialize ChromaDB
-    logger.info(f"Initializing ChromaDB at {CHROMA_DIR}")
-    chroma_client, chroma_collection = init_chroma_client(CHROMA_DIR, CHROMA_MEDICINES_COLLECTION)
-
-    # Extract medicine data (stop when limit is reached)
-    logger.info("Extracting medicine data from CSV")
+    # Extract medicine data, filtering out already processed ones
+    logger.info("Extracting medicine data from CSV (skipping already processed)")
     medicines: list[dict] = []
+    skipped_count = 0
+    medicines_to_save: list[dict] = []  # Batch save to ChromaDB
+    
     for row in rows:
         medicine_data = extract_medicine_data(row)
-        if medicine_data:
-            medicines.append(medicine_data)
-            # Save to ChromaDB immediately after extraction
-            save_medicine_to_chroma(chroma_collection, medicine_data)
+        if not medicine_data:
+            continue
+        
+        medicine_id = medicine_data["id"]
+        
+        # Fast lookup using set - check if already successfully processed
+        if medicine_id in processed_ids:
+            # Double-check MHT file if instruction_url exists
+            if medicine_id in metadata_dict:
+                existing = metadata_dict[medicine_id]
+                instruction_url = medicine_data.get("instruction_url", "")
+                if instruction_url:
+                    # Need to verify MHT file exists
+                    if not existing.mht_file_path or not Path(existing.mht_file_path).exists():
+                        # MHT file missing, need to re-process
+                        processed_ids.discard(medicine_id)
+                    else:
+                        skipped_count += 1
+                        continue
+                else:
+                    # No MHT URL, HTML is enough
+                    skipped_count += 1
+                    continue
+            else:
+                skipped_count += 1
+                continue
+        
+        # Add to list of medicines to process
+        medicines.append(medicine_data)
+        
+        # Collect medicines to save in batch (only those not in ChromaDB)
+        if medicine_id not in metadata_dict:
+            medicines_to_save.append(medicine_data)
 
-            # Stop reading if we've reached the limit
-            if LIMIT and LIMIT > 0 and len(medicines) >= LIMIT:
-                logger.info(f"Reached ingestion limit of {LIMIT} items, stopping CSV reading")
-                break
+        # Stop reading if we've reached the limit of NEW medicines
+        if LIMIT and LIMIT > 0 and len(medicines) >= LIMIT:
+            logger.info(f"Reached ingestion limit of {LIMIT} new medicines, stopping CSV reading")
+            break
 
-    logger.info(f"Found {len(medicines)} medicines to process")
-    logger.info(f"Saved {len(medicines)} medicines to ChromaDB")
+    # Batch save new medicines to ChromaDB
+    if medicines_to_save:
+        save_medicines_batch_to_chroma(chroma_collection, medicines_to_save)
 
-    # Load existing metadata from ChromaDB
-    metadata_dict = load_metadata_from_chroma(chroma_collection)
-    logger.info(f"Loaded {len(metadata_dict)} existing metadata entries from ChromaDB")
+    logger.info(f"Found {len(medicines)} new medicines to process (skipped {skipped_count} already processed)")
+    if LIMIT and LIMIT > 0:
+        remaining_in_csv = len(rows) - already_processed - len(medicines)
+        if remaining_in_csv > 0:
+            logger.info(f"  Note: {remaining_in_csv} more medicines remain in CSV (will be processed in next run)")
 
     # Process each medicine
     logger.info("Starting HTML fetching...")
