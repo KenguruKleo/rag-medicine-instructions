@@ -40,31 +40,32 @@ jobs:
 
       - name: Deploy code
         run: |
-          # Ensure target directory exists
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "sudo mkdir -p /opt/rag-medicine-instructions"
+          # Create tar archive excluding unnecessary files
+          tar --exclude='.git' \
+              --exclude='.venv' \
+              --exclude='__pycache__' \
+              --exclude='*.pyc' \
+              --exclude='.env' \
+              --exclude='storage' \
+              --exclude='data' \
+              --exclude='.DS_Store' \
+              --exclude='*.ipynb_checkpoints' \
+              --exclude='.cursor' \
+              -czf /tmp/deploy.tar.gz .
           
-          # Sync code to temporary location first (to user's home directory)
-          rsync -avz --delete \
-            --exclude '.git' \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '*.pyc' \
-            --exclude '.env' \
-            --exclude 'storage' \
-            --exclude 'data' \
-            --exclude '.DS_Store' \
-            --exclude '*.ipynb_checkpoints' \
-            --exclude '.cursor' \
-            -e "ssh -o StrictHostKeyChecking=no" \
-            ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/rag-deploy-tmp/
+          # Copy archive to server
+          scp -o StrictHostKeyChecking=no /tmp/deploy.tar.gz ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/deploy.tar.gz
           
-          # Move files to final location with sudo
+          # Extract archive on server
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "sudo rm -rf /opt/rag-medicine-instructions/* /opt/rag-medicine-instructions/.* 2>/dev/null || true && \
-             sudo cp -r ~/rag-deploy-tmp/* /opt/rag-medicine-instructions/ && \
-             sudo cp -r ~/rag-deploy-tmp/.[!.]* /opt/rag-medicine-instructions/ 2>/dev/null || true && \
-             rm -rf ~/rag-deploy-tmp"
+            "sudo mkdir -p /opt/rag-medicine-instructions && \
+             cd /opt/rag-medicine-instructions && \
+             sudo tar -xzf /tmp/deploy.tar.gz && \
+             sudo chown -R rag-app:rag-app /opt/rag-medicine-instructions && \
+             rm /tmp/deploy.tar.gz"
+          
+          # Clean up local archive
+          rm /tmp/deploy.tar.gz
 
       - name: Install/update dependencies
         run: |
