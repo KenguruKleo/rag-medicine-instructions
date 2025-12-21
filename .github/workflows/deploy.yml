@@ -36,9 +36,9 @@ jobs:
       - name: Stop service
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "sudo systemctl stop rag-medicine-instructions || true && \
-             sleep 3 && \
-             sudo pkill -f 'streamlit.*8501' || true && \
+            "sudo systemctl stop rag-medicine-instructions || true; \
+             sleep 3; \
+             sudo pkill -f 'streamlit.*8501' || true; \
              sleep 2"
 
       - name: Deploy code
