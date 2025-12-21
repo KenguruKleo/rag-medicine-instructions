@@ -95,10 +95,21 @@ jobs:
       - name: Health check
         run: |
           # Wait a bit more for Streamlit to fully start
-          sleep 10
+          sleep 15
           # Check if service is running
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "sudo systemctl is-active --quiet rag-medicine-instructions && echo 'Service is running' || (echo 'Service failed to start' && sudo systemctl status rag-medicine-instructions --no-pager -l && exit 1)"
+            "if sudo systemctl is-active --quiet rag-medicine-instructions; then \
+               echo '✅ Service is running'; \
+               sudo systemctl status rag-medicine-instructions --no-pager -l | head -20; \
+             else \
+               echo '❌ Service failed to start'; \
+               echo 'Service status:'; \
+               sudo systemctl status rag-medicine-instructions --no-pager -l | head -30; \
+               echo ''; \
+               echo 'Recent logs:'; \
+               sudo journalctl -u rag-medicine-instructions --no-pager -n 50; \
+               exit 1; \
+             fi"
 
       - name: Deployment summary
         if: always()
