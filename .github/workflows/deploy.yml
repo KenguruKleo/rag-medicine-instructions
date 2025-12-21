@@ -40,11 +40,11 @@ jobs:
 
       - name: Deploy code
         run: |
-          # Ensure target directory exists and has correct permissions
+          # Ensure target directory exists
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "sudo mkdir -p /opt/rag-medicine-instructions && sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} /opt/rag-medicine-instructions"
+            "sudo mkdir -p /opt/rag-medicine-instructions"
           
-          # Sync code to server (excluding .git, .venv, data, storage, etc.)
+          # Sync code to temporary location first (to user's home directory)
           rsync -avz --delete \
             --exclude '.git' \
             --exclude '.venv' \
@@ -57,7 +57,14 @@ jobs:
             --exclude '*.ipynb_checkpoints' \
             --exclude '.cursor' \
             -e "ssh -o StrictHostKeyChecking=no" \
-            ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/rag-medicine-instructions/
+            ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/rag-deploy-tmp/
+          
+          # Move files to final location with sudo
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "sudo rm -rf /opt/rag-medicine-instructions/* /opt/rag-medicine-instructions/.* 2>/dev/null || true && \
+             sudo cp -r ~/rag-deploy-tmp/* /opt/rag-medicine-instructions/ && \
+             sudo cp -r ~/rag-deploy-tmp/.[!.]* /opt/rag-medicine-instructions/ 2>/dev/null || true && \
+             rm -rf ~/rag-deploy-tmp"
 
       - name: Install/update dependencies
         run: |
