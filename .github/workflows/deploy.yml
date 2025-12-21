@@ -40,6 +40,10 @@ jobs:
 
       - name: Deploy code
         run: |
+          # Ensure target directory exists and has correct permissions
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "sudo mkdir -p /opt/rag-medicine-instructions && sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} /opt/rag-medicine-instructions"
+          
           # Sync code to server (excluding .git, .venv, data, storage, etc.)
           rsync -avz --delete \
             --exclude '.git' \
