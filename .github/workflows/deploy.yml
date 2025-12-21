@@ -36,7 +36,10 @@ jobs:
       - name: Stop service
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "sudo systemctl stop rag-medicine-instructions || true"
+            "sudo systemctl stop rag-medicine-instructions || true && \
+             sleep 3 && \
+             sudo pkill -f 'streamlit.*8501' || true && \
+             sleep 2"
 
       - name: Deploy code
         run: |
@@ -73,15 +76,20 @@ jobs:
             "cd /opt/rag-medicine-instructions && \
              sudo -u rag-app bash -c 'source .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt'"
 
-      - name: Set permissions
+      - name: Set permissions and create Streamlit config
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "sudo chown -R rag-app:rag-app /opt/rag-medicine-instructions"
+            "sudo chown -R rag-app:rag-app /opt/rag-medicine-instructions && \
+             sudo -u rag-app mkdir -p /opt/rag-medicine-instructions/.streamlit && \
+             sudo -u rag-app touch /opt/rag-medicine-instructions/.streamlit/secrets.toml && \
+             sudo -u rag-app touch /opt/rag-medicine-instructions/.streamlit/config.toml && \
+             sudo chown -R rag-app:rag-app /opt/rag-medicine-instructions/.streamlit"
 
       - name: Start service
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "sudo systemctl start rag-medicine-instructions"
+            "sudo systemctl daemon-reload && \
+             sudo systemctl start rag-medicine-instructions"
 
       - name: Wait for service to start
         run: |
@@ -94,13 +102,21 @@ jobs:
 
       - name: Health check
         run: |
-          # Wait a bit more for Streamlit to fully start
-          sleep 15
-          # Check if service is running
+          # Wait for Streamlit to fully start
+          sleep 20
+          # Check if service is running and port is accessible
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "if sudo systemctl is-active --quiet rag-medicine-instructions; then \
-               echo '✅ Service is running'; \
-               sudo systemctl status rag-medicine-instructions --no-pager -l | head -20; \
+               echo '✅ Service is active'; \
+               sleep 5; \
+               if curl -s http://127.0.0.1:8501/_stcore/health > /dev/null; then \
+                 echo '✅ Streamlit health check passed'; \
+                 sudo systemctl status rag-medicine-instructions --no-pager -l | head -15; \
+               else \
+                 echo '⚠️  Service active but health check failed, checking logs...'; \
+                 sudo journalctl -u rag-medicine-instructions --no-pager -n 30; \
+                 exit 1; \
+               fi; \
              else \
                echo '❌ Service failed to start'; \
                echo 'Service status:'; \
@@ -108,6 +124,9 @@ jobs:
                echo ''; \
                echo 'Recent logs:'; \
                sudo journalctl -u rag-medicine-instructions --no-pager -n 50; \
+               echo ''; \
+               echo 'Checking port 8501:'; \
+               sudo lsof -i :8501 || echo 'Port 8501 is free'; \
                exit 1; \
              fi"
 
