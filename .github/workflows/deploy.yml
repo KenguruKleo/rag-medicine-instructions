@@ -51,14 +51,15 @@ jobs:
             --exclude 'data' \
             --exclude '.DS_Store' \
             --exclude '*.ipynb_checkpoints' \
+            --exclude '.cursor' \
+            -e "ssh -o StrictHostKeyChecking=no" \
             ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/rag-medicine-instructions/
 
       - name: Install/update dependencies
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "cd /opt/rag-medicine-instructions && \
-             sudo -u rag-app .venv/bin/pip install --upgrade pip && \
-             sudo -u rag-app .venv/bin/pip install -r requirements.txt"
+             sudo -u rag-app bash -c 'source .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt'"
 
       - name: Set permissions
         run: |
@@ -85,7 +86,7 @@ jobs:
           sleep 3
           # Check if service is running
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "systemctl is-active --quiet rag-medicine-instructions && echo 'Service is running' || (echo 'Service failed to start' && exit 1)"
+            "sudo systemctl is-active --quiet rag-medicine-instructions && echo 'Service is running' || (echo 'Service failed to start' && exit 1)"
 
       - name: Deployment summary
         if: always()
