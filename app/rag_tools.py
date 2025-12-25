@@ -111,6 +111,63 @@ def create_rag_tools(
         except Exception as e:
             return json.dumps({"error": str(e)})
     
+    def find_medicine_analogs(medicine_id: str) -> str:
+        """Find medicines with the same active ingredient (international_name) as the given medicine.
+        
+        Args:
+            medicine_id: ID of the medicine to find analogs for (32-character hex string)
+        
+        Returns:
+            JSON string with list of analog medicines (same international_name)
+        """
+        import json
+        try:
+            # Get the medicine metadata
+            medicine_result = medicines_collection.get(ids=[medicine_id])
+            if not medicine_result["ids"] or not medicine_result["metadatas"]:
+                return json.dumps({"error": f"Medicine {medicine_id} not found"})
+            
+            medicine_metadata = medicine_result["metadatas"][0]
+            international_name = medicine_metadata.get("international_name", "").strip()
+            
+            if not international_name or international_name == "N/A":
+                return json.dumps({
+                    "medicine_id": medicine_id,
+                    "international_name": international_name,
+                    "analogs": [],
+                    "message": "No international_name found for this medicine"
+                })
+            
+            # Find all medicines with the same international_name
+            all_medicines = medicines_collection.get()
+            analogs = []
+            
+            for i, med_id in enumerate(all_medicines["ids"]):
+                if med_id == medicine_id:
+                    continue  # Skip the original medicine
+                
+                med_metadata = all_medicines["metadatas"][i] if all_medicines["metadatas"] else {}
+                med_international_name = med_metadata.get("international_name", "").strip()
+                
+                # Compare international names (case-insensitive, normalized)
+                if med_international_name and med_international_name.lower() == international_name.lower():
+                    analogs.append({
+                        "medicine_id": med_id,
+                        "ukrainian_name": med_metadata.get("ukrainian_name", "N/A"),
+                        "international_name": med_international_name,
+                        "medicinal_product_name": med_metadata.get("medicinal_product_name", "N/A"),
+                    })
+            
+            return json.dumps({
+                "medicine_id": medicine_id,
+                "ukrainian_name": medicine_metadata.get("ukrainian_name", "N/A"),
+                "international_name": international_name,
+                "analogs": analogs,
+                "analog_count": len(analogs)
+            }, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+    
 
     def get_medicine_full_instruction(medicine_id: str) -> str:
         """Get full instruction text for a specific medicine by reading the MHT file directly.
@@ -245,10 +302,17 @@ def create_rag_tools(
         description="Get the full instruction text for a specific medicine by reading the MHT file directly. This returns the complete instruction text from the source file, not chunks. Use this to retrieve comprehensive information about a medicine. Input: medicine_id (32-character hex string). The max_chunks parameter is kept for compatibility but ignored - full instruction is always returned.",
     )
     
+    find_analogs_tool = StructuredTool.from_function(
+        func=find_medicine_analogs,
+        name="find_medicine_analogs",
+        description="Find medicines with the same active ingredient (international_name) as the given medicine. Use this to identify analog medicines that can be used as additional sources of information. Input: medicine_id (32-character hex string). Returns list of analog medicines with same international_name.",
+    )
+    
     # Return as dictionary for easy access by name
     # Only include tools that are available (based on rag_collection)
     tools_dict = {
         "search_medicine_by_name": medicine_search_tool,
+        "find_medicine_analogs": find_analogs_tool,
     }
     
     if rag_collection is not None:

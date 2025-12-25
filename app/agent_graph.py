@@ -313,12 +313,38 @@ Return ONLY the medicine IDs you find (32-character hex strings), one per line o
                     "agent_used": "full_instruction",
                 }
             
+            # Get medicine metadata to identify international names for analog detection
+            medicine_metadata = {}
+            try:
+                medicine_results = medicines_collection.get(ids=medicine_ids)
+                if medicine_results["ids"]:
+                    for i, med_id in enumerate(medicine_results["ids"]):
+                        metadata = medicine_results["metadatas"][i] if medicine_results["metadatas"] else {}
+                        medicine_metadata[med_id] = {
+                            "ukrainian_name": metadata.get("ukrainian_name", "N/A"),
+                            "international_name": metadata.get("international_name", "N/A"),
+                        }
+            except Exception as e:
+                logger.warning(f"Could not fetch medicine metadata: {e}")
+            
+            medicine_info = "\n".join([
+                f"- {med_id}: {medicine_metadata.get(med_id, {}).get('ukrainian_name', 'N/A')} ({medicine_metadata.get(med_id, {}).get('international_name', 'N/A')})"
+                for med_id in medicine_ids
+            ])
+            
             instruction_prompt = f"""The user asked: "{query}"
 
-I found these medicine IDs: {', '.join(medicine_ids)}
+I found these medicine IDs:
+{medicine_info}
 
-Please retrieve the full instructions for these medicines using get_medicine_full_instruction 
-and provide a comprehensive answer to the user's question in {state.get('response_language', 'English')}."""
+CRITICAL INSTRUCTIONS:
+1. Use get_medicine_full_instruction to retrieve full instructions ONLY for these specific medicine IDs
+2. Answer the question based ONLY on information from these medicines
+3. You MAY use information from other medicines ONLY if they have the same active ingredient (same international_name) as the medicines listed above
+4. Do NOT use information from medicines with different active ingredients
+5. When using search_medical_information, filter results to include ONLY information about the specified medicines or their analogs (same international_name)
+
+Please retrieve the full instructions for these medicines and provide a comprehensive answer to the user's question in {state.get('response_language', 'English')}."""
             
             logger.debug(f"Invoking full instruction agent with {len(medicine_ids)} medicine IDs")
             result = full_instruction_agent.invoke({"messages": [{"role": "user", "content": instruction_prompt}]})

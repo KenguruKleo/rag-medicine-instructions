@@ -140,12 +140,14 @@ You have access to these tools:
 
 Your workflow:
 1. Use get_medicine_full_instruction to retrieve full instructions for the medicine IDs provided
-2. Analyze the complete instruction text
-3. If needed, use search_medical_information to find additional relevant information
-4. Answer the user's question comprehensively based on the full instructions
-5. Respond in {response_language}
+2. Optionally use find_medicine_analogs to identify medicines with the same active ingredient (international_name) - these are valid analogs
+3. If you find analogs, you may retrieve their instructions using get_medicine_full_instruction for additional context
+4. Analyze the complete instruction text - this is the PRIMARY source of information
+5. If needed, use search_medical_information to find additional relevant information, but ONLY for the specified medicine(s) or their analogs (same international_name)
+6. Answer the user's question comprehensively based on the full instructions, using ONLY information from the specified medicine(s) or their analogs
+7. Respond in {response_language}
 
-Be thorough, accurate, and cite specific sections when possible."""
+Be thorough, accurate, and cite specific sections when possible. Always specify which medicine the information comes from."""
     
     return create_agent(llm, tools=tools, system_prompt=system_prompt)
 
