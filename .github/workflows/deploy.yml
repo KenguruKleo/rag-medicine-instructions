@@ -48,6 +48,7 @@ jobs:
       - name: Deploy code
         run: |
           # Create tar archive excluding unnecessary files
+          # Important: Include all files from app/ directory including __init__.py
           tar --exclude='.git' \
               --exclude='.venv' \
               --exclude='__pycache__' \
@@ -60,16 +61,57 @@ jobs:
               --exclude='.cursor' \
               -czf /tmp/deploy.tar.gz .
           
+          # Verify that app/ directory and __init__.py are included
+          echo "Verifying archive contents..."
+          tar -tzf /tmp/deploy.tar.gz | grep -E "^app/" | head -20 || echo "Warning: No app/ files found in archive"
+          tar -tzf /tmp/deploy.tar.gz | grep "app/__init__.py" || echo "Warning: app/__init__.py not found in archive"
+          
           # Copy archive to server
           scp -o StrictHostKeyChecking=no /tmp/deploy.tar.gz ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/deploy.tar.gz
           
-          # Extract archive on server
+          # Extract archive on server, ensuring app/ directory is properly extracted
+          # Remove existing app directory first to ensure clean deployment
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "sudo mkdir -p /opt/rag-medicine-instructions && \
              cd /opt/rag-medicine-instructions && \
+             echo 'Removing existing app/ directory for clean deployment...' && \
+             sudo rm -rf app/ && \
+             echo 'Extracting archive...' && \
              sudo tar -xzf /tmp/deploy.tar.gz && \
              sudo chown -R rag-app:rag-app /opt/rag-medicine-instructions && \
-             rm /tmp/deploy.tar.gz"
+             rm /tmp/deploy.tar.gz && \
+             echo '' && \
+             echo 'Verifying app/ directory on server...' && \
+             ls -la /opt/rag-medicine-instructions/app/ | head -20 && \
+             echo '' && \
+             echo 'Checking for required app files:' && \
+             if [ ! -f /opt/rag-medicine-instructions/app/__init__.py ]; then \
+               echo '❌ ERROR: app/__init__.py is missing!'; \
+               echo 'Files in app/ directory:'; \
+               ls -la /opt/rag-medicine-instructions/app/ || echo 'app/ directory does not exist!'; \
+               exit 1; \
+             fi && \
+             if [ ! -f /opt/rag-medicine-instructions/app/streamlit_app.py ]; then \
+               echo '❌ ERROR: app/streamlit_app.py is missing!'; \
+               exit 1; \
+             fi && \
+             if [ ! -f /opt/rag-medicine-instructions/app/agent_graph.py ]; then \
+               echo '❌ ERROR: app/agent_graph.py is missing!'; \
+               exit 1; \
+             fi && \
+             if [ ! -f /opt/rag-medicine-instructions/app/rag_tools.py ]; then \
+               echo '❌ ERROR: app/rag_tools.py is missing!'; \
+               exit 1; \
+             fi && \
+             if [ ! -f /opt/rag-medicine-instructions/app/agents.py ]; then \
+               echo '❌ ERROR: app/agents.py is missing!'; \
+               exit 1; \
+             fi && \
+             if [ ! -f /opt/rag-medicine-instructions/app/helpers.py ]; then \
+               echo '❌ ERROR: app/helpers.py is missing!'; \
+               exit 1; \
+             fi && \
+             echo '✅ All required app files found'"
           
           # Clean up local archive
           rm /tmp/deploy.tar.gz

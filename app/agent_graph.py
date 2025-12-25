@@ -541,4 +541,3 @@ def process_query_with_agents(
             "agent_used": "error",
             "traceback": traceback.format_exc(),
         }
-
