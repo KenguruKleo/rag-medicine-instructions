@@ -5,14 +5,15 @@ This page displays the content of HTML and MHT files from the data directory.
 """
 
 import os
-import email
-import quopri
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
 
 import streamlit as st
 from dotenv import load_dotenv
+
+# Import helper function
+from app.helpers import parse_mht_file
 
 # Page configuration MUST be first
 st.set_page_config(
@@ -26,54 +27,6 @@ load_dotenv()
 
 # Configuration
 DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
-
-
-def parse_mht_file(mht_path: Path) -> Optional[str]:
-    """Parse MHT file and extract HTML content"""
-    try:
-        with open(mht_path, "rb") as f:
-            msg = email.message_from_bytes(f.read())
-
-        # Find the main HTML part
-        html_content = None
-        for part in msg.walk():
-            content_type = part.get_content_type()
-            if content_type == "text/html":
-                # Get encoding
-                encoding = part.get_content_charset() or "utf-8"
-                transfer_encoding = part.get("Content-Transfer-Encoding", "").lower()
-
-                # Get payload
-                if transfer_encoding == "quoted-printable":
-                    # Handle quoted-printable encoding
-                    payload = part.get_payload()
-                    if isinstance(payload, str):
-                        # Decode quoted-printable
-                        payload = quopri.decodestring(payload.encode()).decode(encoding, errors="ignore")
-                        html_content = payload
-                    else:
-                        payload = part.get_payload(decode=True)
-                        if payload:
-                            try:
-                                html_content = payload.decode(encoding)
-                            except UnicodeDecodeError:
-                                html_content = payload.decode("utf-8", errors="ignore")
-                else:
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        try:
-                            html_content = payload.decode(encoding)
-                        except UnicodeDecodeError:
-                            try:
-                                html_content = payload.decode("windows-1251")
-                            except UnicodeDecodeError:
-                                html_content = payload.decode("utf-8", errors="ignore")
-                break
-
-        return html_content
-    except Exception as e:
-        st.error(f"Error parsing MHT file: {e}")
-        return None
 
 
 def read_html_file(file_path: Path) -> Optional[str]:

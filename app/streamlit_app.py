@@ -2,9 +2,11 @@
 Streamlit web application for RAG-based medical instructions search.
 
 This application provides a chat interface for querying Ukrainian medical instructions
-using semantic search and OpenAI LLM for generating responses.
+using semantic search and multi-agent LLM system for generating responses.
+Supports multiple LLM providers: OpenAI, Anthropic, Google.
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -14,7 +16,19 @@ from urllib.parse import quote
 import chromadb
 import streamlit as st
 from dotenv import load_dotenv
-from openai import OpenAI
+
+from app.agent_graph import process_query_with_agents
+from app.llm_providers import create_embedding_model, create_llm, get_embedding_provider, get_llm_provider, get_model_name
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -23,9 +37,8 @@ load_dotenv()
 CHROMA_DIR = Path(os.getenv("CHROMA_DIR", "storage/chroma"))
 CHROMA_RAG_COLLECTION = os.getenv("CHROMA_RAG_COLLECTION", "instruction_chunks")
 CHROMA_MEDICINES_COLLECTION = os.getenv("CHROMA_MEDICINES_COLLECTION", "medicines")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
-OPENAI_LLM_MODEL = os.getenv("OPENAI_LLM_MODEL", "gpt-5-nano")
+LLM_PROVIDER = get_llm_provider()
+EMBEDDING_PROVIDER = get_embedding_provider()
 
 # Page configuration
 st.set_page_config(
@@ -38,14 +51,25 @@ st.set_page_config(
 # Initialize clients (cached)
 @st.cache_resource
 def init_clients():
-    """Initialize ChromaDB and OpenAI clients."""
-    if not OPENAI_API_KEY:
-        st.error("❌ OPENAI_API_KEY not set. Please configure it in .env file.")
-        st.stop()
-    
+    """Initialize ChromaDB, LLM, and embedding clients."""
     try:
         chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        
+        # Initialize LLM
+        try:
+            llm = create_llm()
+        except ValueError as e:
+            st.error(f"❌ LLM initialization error: {e}")
+            st.info(f"Please configure {LLM_PROVIDER.upper()}_API_KEY in .env file.")
+            st.stop()
+        
+        # Initialize embedding model
+        try:
+            embedding_model = create_embedding_model()
+        except ValueError as e:
+            st.error(f"❌ Embedding model initialization error: {e}")
+            st.info(f"Please configure {EMBEDDING_PROVIDER.upper()}_API_KEY in .env file.")
+            st.stop()
         
         # Check if collections exist
         try:
@@ -58,53 +82,14 @@ def init_clients():
         
         return {
             "chroma_client": chroma_client,
-            "openai_client": openai_client,
+            "llm": llm,
+            "embedding_model": embedding_model,
             "rag_collection": rag_collection,
             "medicines_collection": medicines_collection,
         }
     except Exception as e:
         st.error(f"❌ Error initializing clients: {e}")
         st.stop()
-
-
-def search_instructions(
-    query: str,
-    rag_collection: chromadb.Collection,
-    openai_client: OpenAI,
-    n_results: int = 5,
-) -> list[dict]:
-    """Search medical instructions using semantic search."""
-    try:
-        # Generate embedding for query
-        response = openai_client.embeddings.create(
-            model=OPENAI_EMBED_MODEL,
-            input=query,
-        )
-        query_embedding = response.data[0].embedding
-
-        # Search in ChromaDB
-        results = rag_collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_results,
-            include=["documents", "metadatas", "distances"],
-        )
-
-        # Format results
-        formatted_results = []
-        for i in range(len(results["ids"][0])):
-            formatted_results.append(
-                {
-                    "chunk_id": results["ids"][0][i],
-                    "document": results["documents"][0][i],
-                    "metadata": results["metadatas"][0][i],
-                    "distance": results["distances"][0][i] if results.get("distances") else None,
-                }
-            )
-
-        return formatted_results
-    except Exception as e:
-        st.error(f"Error during search: {e}")
-        return []
 
 
 def get_medicine_info(
@@ -225,98 +210,32 @@ def ask_rag_question(
     query: str,
     rag_collection: chromadb.Collection,
     medicines_collection: chromadb.Collection,
-    openai_client: OpenAI,
+    llm,
+    embedding_model,
     response_language: str = "English",
-    n_results: int = 3,
-    max_context_chars: int = 2000,
 ) -> dict:
     """
-    Ask a question in any language, get response in specified language.
+    Ask a question in any language, get response in specified language using multi-agent system.
     
     Args:
         query: Question in any language (e.g., Ukrainian)
+        rag_collection: ChromaDB collection with instruction chunks
+        medicines_collection: ChromaDB collection with medicine metadata
+        llm: LangChain LLM instance
+        embedding_model: Embedding model instance
         response_language: Language for the response (e.g., "English", "Ukrainian")
-        n_results: Number of relevant chunks to retrieve
-        max_context_chars: Maximum characters of context to include
     
     Returns:
-        dict with 'answer', 'sources', 'chunks_used', 'error'
+        dict with 'answer', 'sources', 'agent_used', 'error'
     """
-    # Step 1: Semantic search to find relevant chunks
-    search_results = search_instructions(query, rag_collection, openai_client, n_results=n_results)
-
-    if not search_results:
-        return {"error": "No relevant information found"}
-
-    # Step 2: Build context from search results
-    context_parts = []
-    sources = []
-
-    for i, result in enumerate(search_results, 1):
-        chunk_text = result["document"]
-        medicine_id = result["metadata"].get("medicine_id", "N/A")
-        source_file = result["metadata"].get("source_file", "N/A")
-
-        # Truncate if too long for context
-        truncated_chunk = chunk_text
-        if len(chunk_text) > max_context_chars // n_results:
-            truncated_chunk = chunk_text[: max_context_chars // n_results] + "..."
-
-        context_parts.append(f"[Source {i} - Medicine ID: {medicine_id}]\n{truncated_chunk}")
-        sources.append(
-            {
-                "medicine_id": medicine_id,
-                "source_file": source_file,
-                "chunk_index": result["metadata"].get("chunk_index", "N/A"),
-                "file_type": result["metadata"].get("file_type", "N/A"),
-                "chunk_text": chunk_text,  # Full chunk text for display
-            }
-        )
-
-    context = "\n\n".join(context_parts)
-
-    # Step 3: Build prompt for LLM
-    system_prompt = f"""You are a medical information assistant. You help users understand medical instructions.
-The medical instructions are in Ukrainian, but you should respond in {response_language}.
-
-Your task:
-1. Understand the Ukrainian medical instruction content provided
-2. Answer the user's question based on the provided context
-3. Respond clearly and accurately in {response_language}
-4. If the context doesn't contain enough information, say so
-5. Always cite which source(s) you used (Source 1, Source 2, etc.)
-
-Be professional, accurate, and helpful."""
-
-    user_prompt = f"""Question: {query}
-
-Relevant medical instruction context (in Ukrainian):
-{context}
-
-Please answer the question in {response_language} based on the provided context."""
-
-    # Step 4: Get response from LLM
-    try:
-        response = openai_client.chat.completions.create(
-            model=OPENAI_LLM_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            # Note: gpt-5-nano only supports default temperature (1), custom values are not supported
-        )
-
-        answer = response.choices[0].message.content
-
-        return {
-            "answer": answer,
-            "sources": sources,
-            "chunks_used": len(search_results),
-            "model": OPENAI_LLM_MODEL,
-            "tokens_used": response.usage.total_tokens if hasattr(response, "usage") else None,
-        }
-    except Exception as e:
-        return {"error": f"Error generating response: {e}"}
+    return process_query_with_agents(
+        query=query,
+        llm=llm,
+        rag_collection=rag_collection,
+        medicines_collection=medicines_collection,
+        embedding_model=embedding_model,
+        response_language=response_language,
+    )
 
 
 def main():
@@ -324,7 +243,8 @@ def main():
     # Initialize clients
     clients = init_clients()
     chroma_client = clients["chroma_client"]
-    openai_client = clients["openai_client"]
+    llm = clients["llm"]
+    embedding_model = clients["embedding_model"]
     rag_collection = clients["rag_collection"]
     medicines_collection = clients["medicines_collection"]
 
@@ -347,20 +267,13 @@ def main():
             help="Language for the AI response",
         )
         
-        # Number of results
-        n_results = st.slider(
-            "Number of sources",
-            min_value=1,
-            max_value=10,
-            value=3,
-            help="Number of relevant chunks to retrieve",
-        )
-        
         st.divider()
         
         # Model information
-        st.caption(f"LLM: {OPENAI_LLM_MODEL}")
-        st.caption(f"Embedding: {OPENAI_EMBED_MODEL}")
+        st.caption(f"LLM Provider: {LLM_PROVIDER}")
+        st.caption(f"Embedding Provider: {EMBEDDING_PROVIDER}")
+        st.caption(f"LLM Model: {get_model_name(llm)}")
+        st.caption(f"Multi-Agent System: ✅ Enabled")
 
     # Main content
     st.title("💊 Medical Instructions RAG")
@@ -453,17 +366,45 @@ def main():
         # Generate response
         with st.chat_message("assistant"):
             with st.spinner("Searching and generating response..."):
-                result = ask_rag_question(
-                    query=prompt,
-                    rag_collection=rag_collection,
-                    medicines_collection=medicines_collection,
-                    openai_client=openai_client,
-                    response_language=response_language,
-                    n_results=n_results,
-                )
+                logger.info(f"📝 User query received: '{prompt[:100]}...'")
+                logger.info(f"   Response language: {response_language}")
+                
+                try:
+                    result = ask_rag_question(
+                        query=prompt,
+                        rag_collection=rag_collection,
+                        medicines_collection=medicines_collection,
+                        llm=llm,
+                        embedding_model=embedding_model,
+                        response_language=response_language,
+                    )
+                    
+                    logger.info(f"✅ Query processed successfully")
+                    logger.debug(f"   Result keys: {list(result.keys())}")
+                    logger.debug(f"   Agent used: {result.get('agent_used')}")
+                    logger.debug(f"   Answer length: {len(result.get('answer', ''))} chars")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error in ask_rag_question: {e}", exc_info=True)
+                    result = {"error": f"Error processing query: {e}"}
 
-                if "error" in result:
-                    st.error(f"❌ {result['error']}")
+                if result.get("error"):
+                    error_msg = result['error']
+                    logger.error(f"❌ Query failed: {error_msg}")
+                    if "traceback" in result:
+                        logger.debug(f"Traceback: {result['traceback']}")
+                    
+                    # Check for token limit error and provide helpful message
+                    if "token" in error_msg.lower() or "context_length" in error_msg.lower():
+                        st.error("❌ **Помилка: Перевищено ліміт токенів**")
+                        st.warning("Запит занадто складний або знайдено занадто багато інформації. Спробуйте більш конкретне питання або переформулюйте запит.")
+                        with st.expander("Деталі помилки"):
+                            st.code(error_msg)
+                    else:
+                        st.error(f"❌ {error_msg}")
+                elif not result.get("answer"):
+                    logger.warning("⚠️ No answer in result")
+                    st.warning("⚠️ No response generated. Please try again.")
                 else:
                     # Replace Source mentions with clickable file links
                     answer_with_links = replace_source_mentions(
@@ -475,10 +416,37 @@ def main():
                     
                     # Show metadata
                     with st.expander("ℹ️ Response Details"):
-                        st.markdown(f"**Chunks used:** {result['chunks_used']}")
+                        # Agent information
+                        agent_used = result.get('agent_used', 'unknown')
+                        agent_names = {
+                            'rag_search': '🔍 RAG Search Agent',
+                            'medicine_extraction': '💊 Medicine Extraction Agent',
+                            'full_instruction': '📚 Full Instruction Agent',
+                        }
+                        agent_display = agent_names.get(agent_used, agent_used)
+                        st.markdown(f"**Agent used:** {agent_display}")
+                        
+                        # Tools information
+                        tools_used = result.get("tools_used", [])
+                        if tools_used:
+                            tool_names = {
+                                'search_medical_information': '🔍 Search Medical Information',
+                                'search_medicine_by_name': '💊 Search Medicine by Name',
+                                'get_medicine_full_instruction': '📄 Get Full Instruction',
+                            }
+                            tools_display = [tool_names.get(tool, tool) for tool in tools_used]
+                            st.markdown(f"**Tools used:** {', '.join(tools_display)}")
+                        else:
+                            st.markdown("**Tools used:** None")
+                        
+                        # Model information
+                        st.markdown(f"**Model:** {result.get('model', 'unknown')}")
+                        
+                        # Additional metadata
                         if result.get("tokens_used"):
                             st.markdown(f"**Tokens used:** {result['tokens_used']:,}")
-                        st.markdown(f"**Model:** {result['model']}")
+                        if result.get("medicine_ids"):
+                            st.markdown(f"**Medicine IDs found:** {', '.join(result['medicine_ids'])}")
                     
                     # Show sources immediately after response
                     if result.get("sources"):

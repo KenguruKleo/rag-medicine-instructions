@@ -1,6 +1,6 @@
 # Medical Instructions RAG System
 
-A RAG (Retrieval-Augmented Generation) system for Ukrainian medical instructions, built with LlamaIndex, ChromaDB, and Streamlit.
+A RAG (Retrieval-Augmented Generation) system for Ukrainian medical instructions, built with LangChain, ChromaDB, and Streamlit. Features a multi-agent system for intelligent query processing and supports multiple LLM providers (OpenAI, Anthropic, Google).
 
 ## Project Status
 
@@ -19,8 +19,9 @@ A RAG (Retrieval-Augmented Generation) system for Ukrainian medical instructions
 
 **Phase 3: Web Interface** (Completed)
 - Streamlit chat interface
-- Query processing
-- Response generation
+- Multi-agent query processing system
+- LangChain integration with tool-based RAG search
+- Support for multiple LLM providers (OpenAI, Anthropic, Google)
 - Multilingual support (Ukrainian questions → English/Ukrainian responses)
 
 ## Setup
@@ -209,8 +210,9 @@ python -m app.indexing
 ```
 
 **Note:** 
-- Indexing requires `OPENAI_API_KEY` in `.env` file
-- Indexing can take a long time and cost money (OpenAI API calls)
+- Indexing requires API key for embeddings (see LLM Provider Configuration below)
+- Default: `OPENAI_API_KEY` for OpenAI embeddings
+- Indexing can take a long time and cost money (API calls)
 - Use `INDEXING_LIMIT` in `.env` to limit processing for testing
 - The script shows progress, token usage, and estimated costs
 
@@ -229,8 +231,11 @@ This will delete all chunks from the RAG collection. Use with caution!
 - `CHUNK_SIZE` - Size of text chunks (default: `1000` characters)
 - `CHUNK_OVERLAP` - Overlap between chunks (default: `200` characters)
 - `INDEXING_LIMIT` - Limit number of files to index (default: `0` = all)
-- `OPENAI_API_KEY` - Required for embeddings
+- `EMBEDDING_PROVIDER` - Embedding provider: "openai" (default) or "google"
+- `OPENAI_API_KEY` - Required for OpenAI embeddings (default)
 - `OPENAI_EMBED_MODEL` - Embedding model (default: `text-embedding-3-small`)
+- `GOOGLE_API_KEY` - Required if using Google embeddings
+- `GOOGLE_EMBED_MODEL` - Google embedding model (default: `models/embedding-001`)
 
 ### Search (Phase 2)
 
@@ -260,25 +265,46 @@ See the "Multilingual RAG" section in `search_rag.ipynb` for working examples.
 
 ### Web Interface (Phase 3)
 
+The web interface uses a multi-agent system powered by LangGraph for intelligent query processing. See [Agent Graph Documentation](docs/AGENT_GRAPH.md) for detailed information about the agent workflow and transitions.
+
 Run the Streamlit web application:
 
+**Important:** Make sure you have activated the virtual environment before running Streamlit:
+
 ```bash
+source .venv/bin/activate  # On macOS/Linux
+# or
+.venv\Scripts\activate  # On Windows
+
 streamlit run app/streamlit_app.py
+```
+
+Or run it directly with Python from the virtual environment:
+
+```bash
+source .venv/bin/activate
+python3 -m streamlit run app/streamlit_app.py
 ```
 
 Or with custom port:
 
 ```bash
+source .venv/bin/activate
 streamlit run app/streamlit_app.py --server.port 8501
 ```
 
 The web interface provides:
+- **Multi-agent system**: Intelligent query processing with three specialized agents
+  - Agent 1: Direct RAG search in documentation
+  - Agent 2: Medicine name extraction and search (if Agent 1 doesn't find enough info)
+  - Agent 3: Full instruction retrieval and comprehensive answer generation
 - Chat interface for querying medical instructions
 - Semantic search across all indexed instructions
 - Multilingual support (ask in Ukrainian, get answer in English/Ukrainian)
 - Source citations with medicine information
 - Response language selection (English, Ukrainian)
 - **File viewer page**: Click on any source file name to view the full medical instruction in a separate page
+- **Multiple LLM provider support**: OpenAI (default), Anthropic Claude, Google Gemini
 
 **Pages:**
 - **Main page** (`/`): Chat interface for querying medical instructions
@@ -775,6 +801,73 @@ See [STORAGE_ANALYSIS.md](STORAGE_ANALYSIS.md) for detailed storage size informa
 Medical instructions are fetched from:
 - Registry: http://www.drlz.com.ua/ibp/ddsite.nsf/all/shlist?opendocument
 - CSV: http://www.drlz.com.ua/ibp/zvity.nsf/all/zvit/$file/reestr.csv
+
+## LLM Provider Configuration
+
+The system supports multiple LLM providers. Configure your choice in `.env`:
+
+### OpenAI (Default)
+
+```bash
+LLM_PROVIDER=openai
+EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=your_api_key_here
+OPENAI_LLM_MODEL=gpt-5-nano
+OPENAI_EMBED_MODEL=text-embedding-3-small
+```
+
+### Microsoft Azure OpenAI
+
+```bash
+# Azure configuration takes precedence if set
+AZURE_OPENAI_API_KEY=your_azure_api_key_here
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME=text-embedding-ada-002
+AZURE_OPENAI_API_VERSION=2024-02-15-preview
+```
+
+### Anthropic (Claude)
+
+```bash
+LLM_PROVIDER=anthropic
+EMBEDDING_PROVIDER=openai  # Anthropic doesn't provide embeddings, use OpenAI
+ANTHROPIC_API_KEY=your_api_key_here
+ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
+```
+
+### Google (Gemini)
+
+```bash
+LLM_PROVIDER=google
+EMBEDDING_PROVIDER=google
+GOOGLE_API_KEY=your_api_key_here
+GOOGLE_MODEL=gemini-pro
+GOOGLE_EMBED_MODEL=models/embedding-001
+```
+
+## Multi-Agent System (LangGraph)
+
+The application uses a **LangGraph-based multi-agent system** for intelligent query processing with automatic routing:
+
+1. **Agent 1 (RAG Search Agent)**: Searches the medical instruction database directly using semantic search. If sufficient information is found, the graph terminates with an immediate answer.
+
+2. **Agent 2 (Medicine Name Extraction Agent)**: If Agent 1 cannot find enough information, LangGraph automatically routes to this agent, which extracts medicine names from the query and searches for them in the medicine database.
+
+3. **Agent 3 (Full Instruction Agent)**: After medicine extraction, LangGraph routes to this agent, which retrieves complete instruction texts for the medicines found and generates comprehensive answers based on the full documentation.
+
+**LangGraph Benefits:**
+- **Automatic routing**: No manual condition checking - LangGraph handles agent transitions based on state
+- **State management**: Clean state passing between agents
+- **Visualizable**: Graph structure can be visualized for debugging
+- **Extensible**: Easy to add new agents or modify routing logic
+
+This system ensures that:
+- Simple queries get fast answers from direct search (single agent execution)
+- Complex queries involving specific medicines automatically trigger the full pipeline
+- Multiple medicines mentioned in a query are all found and processed
+- Only one instruction per medicine is retrieved (no duplicates)
+- Routing decisions are made intelligently based on answer quality
 
 ## Notes
 
