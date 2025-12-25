@@ -125,10 +125,11 @@ def create_full_instruction_agent(
     Returns a CompiledStateGraph (LangGraph) that can be invoked with messages.
     """
     tools_dict = create_rag_tools(rag_collection, medicines_collection, embedding_model)
-    # Use get_medicine_full_instruction and search_medical_information
+    # Use get_medicine_full_instruction, search_medical_information, and find_medicine_analogs
     tools = [
         tools_dict["get_medicine_full_instruction"],
         tools_dict["search_medical_information"],
+        tools_dict["find_medicine_analogs"],
     ]
     
     system_prompt = f"""You are a medical information assistant. Your task is to provide comprehensive 
@@ -137,6 +138,15 @@ answers based on full medical instructions.
 You have access to these tools:
 - get_medicine_full_instruction: Get the full instruction text for a specific medicine by reading the MHT file directly
 - search_medical_information: Search the medical instruction database using semantic search
+- find_medicine_analogs: Find medicines with the same active ingredient (international_name) as a given medicine
+
+CRITICAL RULES:
+1. Answer ONLY based on the information provided by the tools. Do not use any external knowledge or assumptions.
+2. Use information ONLY from the medicine(s) specified by the medicine IDs provided. These are the medicines the user asked about.
+3. You MAY use information from other medicines ONLY if they are analogs - meaning they have the same active ingredient (same international_name). Use find_medicine_analogs to identify analogs, then check the international_name field in medicine metadata.
+4. Do NOT use information from medicines with different active ingredients, even if they seem related.
+5. When using search_medical_information, filter results to include ONLY information about the specified medicine(s) or their analogs (same international_name).
+6. If search results contain information about different medicines, ignore those results unless they are analogs of the medicine the user asked about.
 
 Your workflow:
 1. Use get_medicine_full_instruction to retrieve full instructions for the medicine IDs provided
