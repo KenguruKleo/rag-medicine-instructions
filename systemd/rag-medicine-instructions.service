@@ -8,6 +8,7 @@ User=rag-app
 Group=rag-app
 WorkingDirectory=/opt/rag-medicine-instructions
 Environment="PATH=/opt/rag-medicine-instructions/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/opt/rag-medicine-instructions"
 EnvironmentFile=/opt/rag-medicine-instructions/.env
 
 # Streamlit command
