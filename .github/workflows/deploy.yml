@@ -131,6 +131,12 @@ jobs:
              sudo -u rag-app touch /opt/rag-medicine-instructions/.streamlit/config.toml && \
              sudo chown -R rag-app:rag-app /opt/rag-medicine-instructions/.streamlit"
 
+      - name: Update systemd service
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "sudo cp /opt/rag-medicine-instructions/systemd/rag-medicine-instructions.service /etc/systemd/system/rag-medicine-instructions.service && \
+             sudo systemctl daemon-reload"
+
       - name: Start service
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
